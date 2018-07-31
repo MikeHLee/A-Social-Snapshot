@@ -1,0 +1,207 @@
+---
+title: "Groupme Data Analysis"
+output: html_notebook
+---
+
+This is an data project to the evolution of our social space in VFA.
+
+Questions?
+- Who contributes the most?
+- Meme frequency by time of day?
+- Themes of the most liked posts?
+- Who gets @'d the most?
+- Who @'s the most
+- Who gives their likes most freely?
+
+Let's get our data:
+```{r}
+#Dear computer:
+setwd("~/Documents/Coding/Data")
+library(readr)
+data = as.data.frame(read_csv("groupme_cleaned_72918.csv"))
+View(data)
+class(data)
+```
+
+```{r}
+#libraies
+library(lattice)
+library(boot)
+library(MASS)
+install.packages("ggplot2")
+library(ggplot2)
+install.packages("anytime")
+library(anytime)
+```
+
+Data cleaning and prep:
+```{r}
+#****************DATA CLEANING*****************************
+
+data$created_at<-anytime(data$created_at)
+colnames(data)[colnames(data)=="created_at"] <- "time_sent"
+
+data$attachments<-as.character(data$attachments)
+data$favorited_by<-as.character(data$favorited_by)
+
+######## ADD LIKES COLUMN ##########
+# The string to search in
+s <-data$favorited_by[which(data$favorited_by!="[]")]
+# The character to search for
+p <- ","
+# Replace all occurrences by the empty string - note that gsub uses regular expressions, so escape p accordingly
+s2 <- gsub(p,"",s) # Count the length difference
+data$likes<-rep(0,nrow(data))
+data$likes[which(data$favorited_by!="[]")] <- nchar(s) - nchar(s2) + 1 # numOcc now contains the number of occurrences of p in s
+
+####### ADD attachment columns COLUMN
+data$pic_attch <- grepl("image",data$attachments)
+data$mention_attch <- grepl("mentions",data$attachments)
+
+####### FIND NUMBER MENTIONS
+data$mention_ids <- rep(0,nrow(data))
+data$mention_ids<-sapply(strsplit(data$attachments,"'user_ids': [",fixed="TRUE"),'[',2)
+data$mention_ids<-sapply(strsplit(data$mention_ids,"]}",fixed="TRUE"),'[',1)
+
+# The string to search in
+s <-data$mention_ids[which(!is.na(data$mention_ids))]
+# The character to search for
+p <- ","
+# Replace all occurrences by the empty string - note that gsub uses regular expressions, so escape p accordingly
+s2 <- gsub(p,"",s) # Count the length difference
+data$mention_count<-rep(0,nrow(data))
+data$mention_count[which(!is.na(data$mention_ids))] <- nchar(s) - nchar(s2) + 1
+```
+
+Write the data to a csv
+```{r}
+write.csv(data, file = "GroupmeDataXXXXXX.csv")
+View(data)
+nrow(data)
+```
+
+Get text mining packages:
+```{r}
+install.packages("tm")
+install.packages("SnowballC")
+install.packages("wordcloud")
+install.packages("RColorBrewer")
+install.packages("RCurl")
+install.packages("XML")
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(RCurl)
+library(XML)
+```
+
+Define rquery.wordcloud
+```{r}
+#++++++++++++++++++++++++++++++++++
+# rquery.wordcloud() : Word cloud generator
+# - http://www.sthda.com
+#+++++++++++++++++++++++++++++++++++
+# x : character string (plain text, web url, txt file path)
+# type : specify whether x is a plain text, a web page url or a file path
+# lang : the language of the text
+# excludeWords : a vector of words to exclude from the text
+# textStemming : reduces words to their root form
+# colorPalette : the name of color palette taken from RColorBrewer package, 
+  # or a color name, or a color code
+# min.freq : words with frequency below min.freq will not be plotted
+# max.words : Maximum number of words to be plotted. least frequent terms dropped
+# value returned by the function : a list(tdm, freqTable)
+rquery.wordcloud <- function(x, type=c("text", "url", "file"), 
+                          lang="english", excludeWords=NULL, 
+                          textStemming=FALSE,  colorPalette="Dark2",
+                          min.freq=3, max.words=200)
+{ 
+  library("tm")
+  library("SnowballC")
+  library("wordcloud")
+  library("RColorBrewer") 
+  
+  if(type[1]=="file") text <- readLines(x)
+  else if(type[1]=="url") text <- html_to_text(x)
+  else if(type[1]=="text") text <- x
+  
+  # Load the text as a corpus
+  docs <- Corpus(VectorSource(text))
+  # Convert the text to lower case
+  docs <- tm_map(docs, content_transformer(tolower))
+  # Remove numbers
+  docs <- tm_map(docs, removeNumbers)
+  # Remove stopwords for the language 
+  docs <- tm_map(docs, removeWords, stopwords(lang))
+  # Remove punctuations
+  docs <- tm_map(docs, removePunctuation)
+  # Eliminate extra white spaces
+  docs <- tm_map(docs, stripWhitespace)
+  # Remove your own stopwords
+  if(!is.null(excludeWords)) 
+    docs <- tm_map(docs, removeWords, excludeWords) 
+  # Text stemming
+  if(textStemming) docs <- tm_map(docs, stemDocument)
+  # Create term-document matrix
+  tdm <- TermDocumentMatrix(docs)
+  m <- as.matrix(tdm)
+  v <- sort(rowSums(m),decreasing=TRUE)
+  d <- data.frame(word = names(v),freq=v)
+  # check the color palette name 
+  if(!colorPalette %in% rownames(brewer.pal.info)) colors = colorPalette
+  else colors = brewer.pal(8, colorPalette) 
+  # Plot the word cloud
+  set.seed(1234)
+  wordcloud(d$word,d$freq, min.freq=min.freq, max.words=max.words,
+            random.order=FALSE, rot.per=0.35, 
+            use.r.layout=FALSE, colors=colors)
+  
+  invisible(list(tdm=tdm, freqTable = d))
+}
+
+#++++++++++++++++++++++
+# Helper function
+#++++++++++++++++++++++
+# Download and parse webpage
+html_to_text<-function(url){
+  library(RCurl)
+  library(XML)
+  # download html
+  html.doc <- getURL(url)  
+  #convert to plain text
+  doc = htmlParse(html.doc, asText=TRUE)
+ # "//text()" returns all text outside of HTML tags.
+ # We also don’t want text such as style and script codes
+  text <- xpathSApply(doc, "//text()[not(ancestor::script)][not(ancestor::style)][not(ancestor::noscript)][not(ancestor::form)]", xmlValue)
+  # Format text vector into one character string
+  return(paste(text, collapse = " "))
+}
+```
+
+Most Common Words Overall:          
+```{r}
+rquery.wordcloud(data$text, type=c("text"), 
+        lang="english", excludeWords = c("s","d","y","m","ve","'","",",","ll",",","`","re"), 
+        textStemming = FALSE, colorPalette="Dark2",
+        max.words=200)
+```
+
+Common Words in Top 200 Most Likes (Top 5%) Messages:
+```{r}
+library(plyr) 
+top200 = head(arrange(data,desc(likes)), n = 200) #get 200 most liked comments
+View(top200$text) #view
+
+rquery.wordcloud(top200$text, type=c("text"), 
+        lang="english", excludeWords = c("s","d","y","m","ve","'","",",","ll",",","`","re"), 
+        textStemming = FALSE, colorPalette="Dark2",
+        max.words=200)
+
+
+```
+
+Correlation between post activity and total likes accumulated:
+
+
+
